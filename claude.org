@@ -1,0 +1,191 @@
+#+TITLE: hs_kanata Implementation Notes for Future Development
+#+AUTHOR: Claude Code
+#+DATE: 2025-11-02
+
+* Architecture Overview
+
+The spoon follows a simple event-driven pattern:
+1. Socket listener receives JSON messages from Kanata
+2. Messages are parsed into clean Lua tables
+3. User-provided callbacks are executed
+4. Built-in handlers (layer display) update UI
+
+* Key Design Decisions
+
+** Socket Communication Model (Important!)
+- Uses =hs.socket= which is asynchronous, not synchronous
+- =setCallback()= registers the handler
+- =read()= queues a read operation (does NOT block or return data)
+- Callback fires when data matching the delimiter arrives
+- **Must queue next read inside callback** to keep stream flowing
+- This is why =handle_socket_data()= calls =obj.client:read("\n", 1)=
+
+Lesson learned: Early debugging showed =receive()= returning socket objects instead of data. The issue was that we weren't using the callback+read pattern correctly.
+
+** Canvas per Screen
+- Store canvases in table indexed by screen ID: =self.canvases[screen_id]=
+- Create/update lazily when layer changes (not in init)
+- Allows graceful handling of displays connecting/disconnecting
+- Position calculated as: =frame.x + frame.w * x_pos - canvas_width / 2=
+
+** Callback Architecture
+- User callbacks in =obj.callbacks[MessageType]=
+- Wrapped in =pcall()= for safety (user code might crash)
+- Both user callbacks AND built-in handlers run
+- LayerChange handler always runs to update display
+- This allows customization without removing built-in functionality
+
+** Optional Visual Notification
+- =show_notification= flag controls canvas display
+- Early design had only visual display, now callbacks are primary
+- Some users might want just callbacks, not on-screen display
+
+* Message Parsing
+
+Parser: =parse_kanata_message(message)=
+- Input: Raw JSON string from socket
+- Output: =(success, parsed_table, message_type)=
+- Uses option-style returns (success flag first)
+- Handles malformed JSON gracefully via =pcall(hs.json.decode())=
+- Merges message type with payload into single table for ease of use
+
+Example:
+```lua
+{"LayerChange":{"new":"nav"}}
+  -> {type="LayerChange", new="nav"}
+```
+
+* Critical Implementation Details
+
+** Socket Handler Extraction
+- =handle_socket_data()= is a module-level local function
+- Takes =obj= as first parameter (not implicit closure)
+- Makes socket logic independent and readable
+- Called from =init()= via wrapper to pass self
+
+Why outside init? Cleaner =init()= and better code organization.
+
+** Logging
+- All debug info uses =hs.logger.new("Kanata"): logger.d()=, =logger.i()=
+- Not =print()= (which pollutes console)
+- Allows users to control log levels globally
+
+** Error Handling
+- All external operations wrapped in =pcall()= (socket close, read, connect)
+- User callbacks wrapped in =pcall()=
+- Never crash the system, always return gracefully
+- Error alerts for connection failures only
+
+** Configuration Pattern
+- Properties stored as =obj.propname= (not private)
+- =configure(table)= method for bulk updates
+- Defaults set at object definition time
+- All properties can be overridden before =init()=
+
+* Important Patterns Used
+
+** Option-style Return Values
+```lua
+function parse_kanata_message(message)
+  if not message then return false, nil, nil end
+  -- ...
+  return true, result, msg_type
+end
+
+-- Usage
+local success, msg, msg_type = parse_kanata_message(data)
+if success then ... end
+```
+
+Advantages over returning nil:
+- Explicit success indicator
+- Can't confuse nil with empty message
+- Caller must check success, not rely on truthiness
+
+** Per-Screen Canvas Management
+```lua
+local screen_id = tostring(screen:id())
+local canvas = self.canvases[screen_id]
+
+if not canvas then
+  canvas = hs.canvas.new(canvas_frame)
+  self.canvases[screen_id] = canvas
+else
+  canvas:frame(canvas_frame)  -- Update position
+end
+```
+
+Allows tracking multiple independent displays.
+
+** Safe Callback Execution
+```lua
+if self.callbacks[msg_type] then
+  pcall(function() self.callbacks[msg_type](msg) end)
+end
+```
+
+Ensures user code errors don't crash the monitor.
+
+* Things to Watch Out For
+
+** Socket Read Callbacks
+- Don't try to return data from =read()= - it doesn't work that way
+- The callback is asynchronous; always queue next read inside it
+- Failing to queue next read = stream stops flowing
+- Use =\n= or =\r\n= as delimiter depending on server
+
+** Screen ID Stability
+- Screen IDs persist across connect/disconnect
+- Old canvas entries for disconnected screens remain in table
+- They're hidden (=canvas:hide()=) so no visual issues
+- Consider periodic cleanup if many displays connect/disconnect
+
+** JSON Parsing Edge Cases
+- =hs.json.decode()= raises errors, must use =pcall()=
+- Parser assumes message type is first key, payload is table value
+- Will silently fail if message structure doesn't match
+
+** Position Calculation
+- =x_pos = 0.5= means canvas CENTER at horizontal middle
+- Not left edge at 0.5
+- Calculation: =frame.x + frame.w * x_pos - canvas_width / 2=
+
+* Future Enhancement Ideas
+
+1. **Multiple message types**: Currently only LayerChange is built-in. Could add support for other Kanata events (key presses, timing info, etc.)
+
+2. **Persistent connections**: Add reconnect timer if connection drops unexpectedly (network interruption)
+
+3. **Layer-specific callbacks**: Register different callbacks for different layers
+
+4. **Canvas persistence**: Remember last shown layer across Hammerspoon reloads
+
+5. **Thread-safe access**: If multiple callbacks need to access shared state
+
+6. **Message filtering**: Allow user to filter which message types trigger notifications
+
+7. **Animation**: Fade in/out layer display instead of instant show/hide
+
+8. **Statistics**: Track layer usage time, most-used layers, etc.
+
+* Testing Locally
+
+```lua
+-- Manually trigger a layer change
+kanataMonitor:kanata_callback({type="LayerChange", new="test"}, "LayerChange")
+
+-- Test canvas positioning
+kanataMonitor:configure({x_pos = 0.25, y_pos = 0.25})
+
+-- Test without visual notification
+kanataMonitor.show_notification = false
+```
+
+* Code Style Consistency
+
+- Follow parent project's coding standards (see /Users/dmg/.hammerspoon/claude.org)
+- Use Lua idioms: modulo for cycling, short-circuit for conditionals
+- Extract functions that are >20 lines for clarity
+- Always document with LuaDoc format
+- Use option-style returns for "fallible" functions
+- Prefer =self.attr= over closure for clarity

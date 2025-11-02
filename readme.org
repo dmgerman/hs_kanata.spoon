@@ -1,0 +1,137 @@
+#+TITLE: hs_kanata Spoon
+#+AUTHOR: dmg
+#+DATE: 2025-11-02
+
+* Overview
+hs_kanata is a Hammerspoon spoon that monitors Kanata keyboard events via a TCP socket. When Kanata changes the keyboard layer, it sends notifications to Hammerspoon which displays the new layer name on screen and triggers user-defined callbacks.
+
+* Features
+
+** Layer Change Notifications
+- Displays the current keyboard layer name on screen (when not on "base" layer)
+- Shows on all connected displays simultaneously
+- Configurable position, size, color, and text styling
+
+** Callback System
+- Register custom callbacks for message types (currently: LayerChange)
+- Callbacks receive parsed message data as tables
+- Useful for triggering actions when layers change (alerts, logging, automation)
+
+** Flexible Configuration
+- Configurable canvas appearance (width, height, text size, color)
+- Configurable display position (x_pos, y_pos as 0-1 scale)
+- Optional visual notification (can be disabled)
+- Connection parameters (host, port)
+
+** Robust Connection Management
+- Reconnect to Kanata if it restarts: =kanataMonitor:restart()=
+- Graceful error handling with pcall
+- Proper socket closure with =close()=
+
+* kanata
+
+kanata must be started in server mode:
+
+#+begin_src bash   :exports both
+kanata -p 127.0.0.1:12340 --cfg ~/.config/kanata/kanata.kbd
+#+end_src
+
+
+* Usage
+
+** Basic Setup
+
+In your =init.lua= file add:
+
+#+BEGIN_SRC lua
+function load_kanata()
+  local kanata = hs.loadSpoon("hs_kanata")
+
+  local callbacks = {
+    LayerChange = function(msg)
+      hs.alert.show("Kanata layer: " .. (msg.new or "?"))
+    end
+  }
+
+  kanata:init(callbacks)
+  return kanata
+end
+kanataMonitor =_load_kanata()
+#+END_SRC
+
+** Configuration
+
+Configure appearance and position:
+
+#+BEGIN_SRC lua
+kanataMonitor:configure({
+  canvas_width = 500,
+  canvas_height = 250,
+  text_size = 100,
+  text_color = {red = 0, green = 1, blue = 0},  -- green
+  x_pos = 0.5,  -- center horizontally
+  y_pos = 0.3   -- upper-middle vertically
+})
+#+END_SRC
+
+Disable visual notifications:
+
+#+BEGIN_SRC lua
+kanataMonitor.show_notification = false
+#+END_SRC
+
+Change connection parameters (before calling init)
+
+#+BEGIN_SRC lua
+kanataMonitor.host = "192.168.1.100"
+kanataMonitor.port = 12345
+#+END_SRC
+
+** Reconnecting
+
+To restart the client (e.g. if you restart kanata):
+
+#+BEGIN_SRC lua
+kanataMonitor:restart()
+#+END_SRC
+
+* Message Format
+
+Kanata sends JSON messages like:
+
+#+BEGIN_SRC json
+{"LayerChange":{"new":"nav"}}
+#+END_SRC
+
+These are parsed into Lua tables, which are passed as ~msg~ parameter to the callback.
+
+#+BEGIN_SRC lua
+{
+  type = "LayerChange",
+  new = "nav"
+}
+#+END_SRC
+
+
+* Configuration Defaults
+
+| Parameter         |                  Default | Description               |
+|-------------------+--------------------------+---------------------------|
+| host              |                127.0.0.1 | Kanata server host        |
+| port              |                    12340 | Kanata server port        |
+| show_notification |                     true | Display layer on screen   |
+| canvas_width      |                      400 | Canvas width in pixels    |
+| canvas_height     |                      200 | Canvas height in pixels   |
+| text_size         |                      120 | Text size in points       |
+| text_color        | {red=1, green=0, blue=0} | Red (RGB table)           |
+| x_pos             |                      0.5 | Horizontal position (0-1) |
+| y_pos             |                     0.75 | Vertical position (0-1)   |
+
+* Implementation Notes
+
+- Uses =hs.socket= for TCP communication
+- Asynchronous socket callback model: =setCallback()= + =read()=
+- JSON parsing with =hs.json.decode()=
+- Logging via =hs.logger= with "Kanata" prefix
+- All user callbacks wrapped in =pcall()= for safety
+- Per-screen canvas management by screen ID
