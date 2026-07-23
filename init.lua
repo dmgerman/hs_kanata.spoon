@@ -2,6 +2,8 @@
 -- Connects to Kanata TCP server and displays current layer on screen.
 local obj = {}
 obj.__index = obj
+obj.name = "kanata"
+
 
 -- Logger
 local logger = hs.logger.new("Kanata")
@@ -147,6 +149,34 @@ function obj:configure(config)
   return self
 end
 
+--- Report current connection status.
+-- Shows an alert with a one-line summary and logs details to the console.
+--
+-- @return (self): Spoon object for chaining
+function obj:status()
+  local connected = false
+  if self.client then
+    local ok, result = pcall(function() return self.client:connected() end)
+    connected = ok and result or false
+  end
+
+  local state = connected and "connected" or "disconnected"
+  local endpoint = self.host .. ":" .. self.port
+  local canvas_count = 0
+  for _ in pairs(self.canvases) do canvas_count = canvas_count + 1 end
+  local callback_count = 0
+  for _ in pairs(self.callbacks) do callback_count = callback_count + 1 end
+
+  local summary = string.format("Kanata: %s (%s) layer=%s", state, endpoint, self.current_layer)
+  hs.alert.show(summary)
+
+  logger.i(summary)
+  logger.i(string.format("  client=%s canvases=%d callbacks=%d show_notification=%s",
+    tostring(self.client), canvas_count, callback_count, tostring(self.show_notification)))
+
+  return self
+end
+
 --- Close the socket connection.
 -- Safely disconnects from Kanata server.
 function obj:close()
@@ -217,5 +247,15 @@ function obj:init(callbacks)
 
   return self
 end
+
+obj.publicCommands = {
+  { fn = function() obj:restart() end,       desc = "restart - restart the client" },
+  { fn = function() obj:close() end,         desc = "close - close the client" },
+  { fn = function() obj:init() end,          desc = "init - start the client" },
+  { fn = function() obj:status() end,        desc = "status - show connection status" },
+
+
+}
+
 
 return obj
